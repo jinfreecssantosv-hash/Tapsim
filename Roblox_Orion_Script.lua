@@ -1,76 +1,226 @@
--- Robust Orion loader + Tap Simulator starter GUI (best-effort remote names)
--- NOTE: This uses likely remote names for Tap Simulator games. Because games differ,
--- this is a best-effort script. If a feature doesn't work, run the remote enumerator
--- I suggested earlier and paste the output so I can wire the exact remotes.
+-- Self-contained Tap Simulator GUI (no external libraries)
+-- Provides Auto Tap, Auto Rebirth, Remote Enumerator, and simple teleports
 
--- Safe HTTP fetch (tries game:HttpGet and common executor request functions)
-local function fetchUrl(url)
-    local ok, body = pcall(function()
-        if game and game.HttpGet then
-            return game:HttpGet(url, true)
-        end
-    end)
-    if ok and body and #body > 0 then return body end
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then return warn("LocalPlayer not found. Run this client-side in a player session.") end
 
-    local requestFuncs = {
-        function(u) if syn and syn.request then return syn.request({Url = u, Method = "GET"}) end end,
-        function(u) if http and http.request then return http.request({Url = u, Method = "GET"}) end end,
-        function(u) if request then return request({Url = u, Method = "GET"}) end end,
-        function(u) if http_request then return http_request({Url = u, Method = "GET"}) end end,
-    }
-    for _, f in ipairs(requestFuncs) do
-        local ok2, res = pcall(function() return f(url) end)
-        if ok2 and res then
-            local body = res.Body or res.body
-            if body and #body > 0 then return body end
-        end
-    end
-    return nil, "failed to fetch"
+-- remove old GUI if present
+local existing = LocalPlayer:FindFirstChildOfClass("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("TapSimGUI_by_Copilot")
+if existing then existing:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "TapSimGUI_by_Copilot"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+-- basic styling helper
+local function make(cls, props)
+    local obj = Instance.new(cls)
+    for k,v in pairs(props or {}) do obj[k] = v end
+    return obj
 end
 
--- Load Orion safely
-local orionUrl = "https://raw.githubusercontent.com/shlexware/Orion/main/source"
-local orionCode, err = fetchUrl(orionUrl)
-if not orionCode then
-    error("Could not fetch Orion library: "..tostring(err).."  URL: "..orionUrl)
-end
+local mainFrame = make("Frame", {
+    Size = UDim2.new(0, 360, 0, 420),
+    Position = UDim2.new(0.5, -180, 0.15, 0),
+    BackgroundColor3 = Color3.fromRGB(24,24,24),
+    BorderSizePixel = 0,
+    Parent = screenGui
+})
+mainFrame.Active = true
+mainFrame.Draggable = true
 
-local exec = load or loadstring
-local OrionLib = exec(orionCode)
-if type(OrionLib) == "function" then
-    OrionLib = OrionLib()
-end
-if not OrionLib then
-    error("Failed to execute Orion library code.")
-end
-
--- Create main window
-local Window = OrionLib:MakeWindow({
-    Name = "Tap Simulator - GUI",
-    HidePremium = true,
-    SaveConfig = true,
-    ConfigFolder = "TapSim"
+local title = make("TextLabel", {
+    Size = UDim2.new(1,0,0,36),
+    Position = UDim2.new(0,0,0,0),
+    BackgroundTransparency = 1,
+    Text = "Tap Simulator - Copilot GUI",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSansBold,
+    TextSize = 20,
+    Parent = mainFrame
 })
 
--- Tabs
-local mainTab = Window:MakeTab({ Name = "Main", Icon = "rbxassetid://4483345998", PremiumOnly = false })
-local autoTab = Window:MakeTab({ Name = "Auto", Icon = "rbxassetid://4483345998", PremiumOnly = false })
-local tpTab   = Window:MakeTab({ Name = "Teleports", Icon = "rbxassetid://4483345998", PremiumOnly = false })
-local miscTab = Window:MakeTab({ Name = "Misc", Icon = "rbxassetid://4483345998", PremiumOnly = false })
+local function makeButton(y, txt)
+    local btn = make("TextButton", {
+        Size = UDim2.new(0,160,0,36),
+        Position = UDim2.new(0, 16 + ((#mainFrame:GetChildren()-3)%2)*176, 0, 56 + y),
+        BackgroundColor3 = Color3.fromRGB(40,40,40),
+        BorderSizePixel = 0,
+        Text = txt,
+        TextColor3 = Color3.fromRGB(255,255,255),
+        Font = Enum.Font.SourceSans,
+        TextSize = 16,
+        Parent = mainFrame
+    })
+    return btn
+end
 
--- Utility: find remote by name candidates (walks ReplicatedStorage and common folders)
+-- Notification label (small)
+local notif = make("TextLabel", {
+    Size = UDim2.new(1, -16, 0, 28),
+    Position = UDim2.new(0,8,1,-36),
+    BackgroundTransparency = 0.2,
+    BackgroundColor3 = Color3.fromRGB(10,10,10),
+    TextColor3 = Color3.fromRGB(200,200,200),
+    Text = "",
+    Font = Enum.Font.SourceSans,
+    TextSize = 16,
+    Parent = mainFrame
+})
+
+local function notify(msg, t)
+    t = t or 4
+    notif.Text = msg
+    spawn(function()
+        wait(t)
+        if notif then notif.Text = "" end
+    end)
+end
+
+-- Controls area
+local ctrlY = 0
+
+-- Auto Tap toggle
+local autoTapToggle = make("TextButton", {
+    Size = UDim2.new(0,160,0,36),
+    Position = UDim2.new(0,16,0,56),
+    BackgroundColor3 = Color3.fromRGB(60,60,60),
+    Text = "Auto Tap: OFF",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSans,
+    TextSize = 16,
+    Parent = mainFrame
+})
+
+local autoRebirthToggle = make("TextButton", {
+    Size = UDim2.new(0,160,0,36),
+    Position = UDim2.new(0,192,0,56),
+    BackgroundColor3 = Color3.fromRGB(60,60,60),
+    Text = "Auto Rebirth: OFF",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSans,
+    TextSize = 16,
+    Parent = mainFrame
+})
+
+-- Delay input
+local delayLabel = make("TextLabel", {
+    Size = UDim2.new(0,160,0,20),
+    Position = UDim2.new(0,16,0,104),
+    BackgroundTransparency = 1,
+    Text = "Tap Delay (s):",
+    TextColor3 = Color3.fromRGB(200,200,200),
+    Font = Enum.Font.SourceSans,
+    TextSize = 14,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = mainFrame
+})
+local delayBox = make("TextBox", {
+    Size = UDim2.new(0,160,0,28),
+    Position = UDim2.new(0,16,0,124),
+    BackgroundColor3 = Color3.fromRGB(40,40,40),
+    Text = "0.1",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSans,
+    TextSize = 16,
+    Parent = mainFrame
+})
+
+-- Rebirth attempts input
+local rebLabel = make("TextLabel", {
+    Size = UDim2.new(0,160,0,20),
+    Position = UDim2.new(0,192,0,104),
+    BackgroundTransparency = 1,
+    Text = "Rebirth per loop:",
+    TextColor3 = Color3.fromRGB(200,200,200),
+    Font = Enum.Font.SourceSans,
+    TextSize = 14,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = mainFrame
+})
+local rebBox = make("TextBox", {
+    Size = UDim2.new(0,160,0,28),
+    Position = UDim2.new(0,192,0,124),
+    BackgroundColor3 = Color3.fromRGB(40,40,40),
+    Text = "1",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSans,
+    TextSize = 16,
+    Parent = mainFrame
+})
+
+-- Remote enumerator and test buttons
+local enumBtn = make("TextButton", {
+    Size = UDim2.new(0,336,0,36),
+    Position = UDim2.new(0,16,0,168),
+    BackgroundColor3 = Color3.fromRGB(50,50,50),
+    Text = "Remote Enumerator (prints to console)",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSans,
+    TextSize = 16,
+    Parent = mainFrame
+})
+
+local printGuessBtn = make("TextButton", {
+    Size = UDim2.new(0,336,0,36),
+    Position = UDim2.new(0,16,0,212),
+    BackgroundColor3 = Color3.fromRGB(50,50,50),
+    Text = "Print guessed Tap & Rebirth",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSans,
+    TextSize = 16,
+    Parent = mainFrame
+})
+
+-- Teleports
+local tp1 = make("TextButton", {
+    Size = UDim2.new(0,160,0,36),
+    Position = UDim2.new(0,16,0,260),
+    BackgroundColor3 = Color3.fromRGB(50,50,50),
+    Text = "Teleport Spawn",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSans,
+    TextSize = 16,
+    Parent = mainFrame
+})
+local tp2 = make("TextButton", {
+    Size = UDim2.new(0,160,0,36),
+    Position = UDim2.new(0,192,0,260),
+    BackgroundColor3 = Color3.fromRGB(50,50,50),
+    Text = "Teleport Shop",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSans,
+    TextSize = 16,
+    Parent = mainFrame
+})
+
+-- Close button
+local closeBtn = make("TextButton", {
+    Size = UDim2.new(0,34,0,28),
+    Position = UDim2.new(1,-40,0,6),
+    BackgroundColor3 = Color3.fromRGB(140,30,30),
+    Text = "X",
+    TextColor3 = Color3.fromRGB(255,255,255),
+    Font = Enum.Font.SourceSansBold,
+    TextSize = 18,
+    Parent = mainFrame
+})
+
+closeBtn.MouseButton1Click:Connect(function()
+    screenGui:Destroy()
+end)
+
+-- Remote helpers (same approach as before)
 local function findRemoteCandidates()
     local found = {}
-    local checked = {}
     local function checkParent(parent)
-        if not parent or checked[parent] then return end
-        checked[parent] = true
+        if not parent then return end
         for _, child in ipairs(parent:GetChildren()) do
-            local class = child.ClassName
-            if class == "RemoteEvent" or class == "RemoteFunction" then
+            if child.ClassName == "RemoteEvent" or child.ClassName == "RemoteFunction" then
                 table.insert(found, child)
-            elseif child:IsA("Folder") or child:IsA("ModuleScript") then
-                -- scan children (shallow)
+            elseif child:IsA("Folder") then
                 for _, g in ipairs(child:GetChildren()) do
                     if g.ClassName == "RemoteEvent" or g.ClassName == "RemoteFunction" then
                         table.insert(found, g)
@@ -79,305 +229,179 @@ local function findRemoteCandidates()
             end
         end
     end
-
-    local servicesToScan = {
-        game:GetService("ReplicatedStorage"),
-        game:GetService("ReplicatedFirst"),
-        game:GetService("StarterGui"),
-        game:GetService("Workspace"),
-        (game:GetService("Players").LocalPlayer and (game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui"))) or nil
-    }
-    for _, s in ipairs(servicesToScan) do
-        if s then checkParent(s) end
-    end
+    local services = {game:GetService("ReplicatedStorage"), game:GetService("ReplicatedFirst"), game:GetService("Workspace"), LocalPlayer:FindFirstChild("PlayerGui")}
+    for _, s in ipairs(services) do if s then checkParent(s) end end
     return found
 end
 
--- Heuristic lookups by common names (best-effort)
 local function findTapRemote()
-    local names = {
-        "Tap", "Click", "ClickRemote", "TapEvent", "Collect", "RemoteTap", "ClickEvent", "Hit",
-        "RemoteEvent", "Remote", "ClickRemoteEvent", "ClickRemoteEvent"
-    }
+    local names = {"Tap","Click","Collect","Hit","ClickRemote","TapEvent","ClickEvent"}
     local rs = game:GetService("ReplicatedStorage")
-    -- check direct children and common Remotes container
-    local containers = { rs, rs:FindFirstChild("Remotes"), rs:FindFirstChild("RemoteEvents"), rs:FindFirstChild("Events") }
+    local containers = {rs, rs:FindFirstChild("Remotes"), rs:FindFirstChild("RemoteEvents"), rs:FindFirstChild("Events")}
     for _, cont in ipairs(containers) do
         if cont then
-            for _, name in ipairs(names) do
-                local obj = cont:FindFirstChild(name)
-                if obj and (obj.ClassName == "RemoteEvent" or obj.ClassName == "RemoteFunction") then
-                    return obj
-                end
+            for _, n in ipairs(names) do
+                local obj = cont:FindFirstChild(n)
+                if obj and (obj.ClassName=="RemoteEvent" or obj.ClassName=="RemoteFunction") then return obj end
             end
-            -- check children of that container
             for _, child in ipairs(cont:GetChildren()) do
                 if child:IsA("Folder") then
-                    for _, name in ipairs(names) do
-                        local obj = child:FindFirstChild(name)
-                        if obj and (obj.ClassName == "RemoteEvent" or obj.ClassName == "RemoteFunction") then
-                            return obj
-                        end
+                    for _, n in ipairs(names) do
+                        local obj = child:FindFirstChild(n)
+                        if obj and (obj.ClassName=="RemoteEvent" or obj.ClassName=="RemoteFunction") then return obj end
                     end
                 end
             end
         end
     end
-
-    -- fallback: scan common services for any remote with a "Tap/Click" like name
     local all = findRemoteCandidates()
-    for _, r in ipairs(all) do
-        local rn = r.Name:lower()
-        if rn:match("tap") or rn:match("click") or rn:match("hit") or rn:match("collect") then
-            return r
-        end
-    end
-
-    -- last resort: return first RemoteEvent found (useful for quick testing)
-    if #all > 0 then return all[1] end
+    for _, r in ipairs(all) do local rn = r.Name:lower() if rn:match("tap") or rn:match("click") or rn:match("collect") then return r end end
+    if #all>0 then return all[1] end
     return nil
 end
 
 local function findRebirthRemote()
-    local names = {"Rebirth", "Prestige", "RebirthEvent", "PrestigeEvent", "RebirthRemote"}
+    local names = {"Rebirth","Prestige","RebirthEvent","PrestigeEvent"}
     local rs = game:GetService("ReplicatedStorage")
-    local containers = { rs, rs:FindFirstChild("Remotes"), rs:FindFirstChild("RemoteEvents") }
+    local containers = {rs, rs:FindFirstChild("Remotes"), rs:FindFirstChild("RemoteEvents")}
     for _, cont in ipairs(containers) do
         if cont then
-            for _, name in ipairs(names) do
-                local obj = cont:FindFirstChild(name)
-                if obj and (obj.ClassName == "RemoteEvent" or obj.ClassName == "RemoteFunction") then
-                    return obj
-                end
+            for _, n in ipairs(names) do
+                local obj = cont:FindFirstChild(n)
+                if obj and (obj.ClassName=="RemoteEvent" or obj.ClassName=="RemoteFunction") then return obj end
             end
             for _, child in ipairs(cont:GetChildren()) do
                 if child:IsA("Folder") then
-                    for _, name in ipairs(names) do
-                        local obj = child:FindFirstChild(name)
-                        if obj and (obj.ClassName == "RemoteEvent" or obj.ClassName == "RemoteFunction") then
-                            return obj
-                        end
+                    for _, n in ipairs(names) do
+                        local obj = child:FindFirstChild(n)
+                        if obj and (obj.ClassName=="RemoteEvent" or obj.ClassName=="RemoteFunction") then return obj end
                     end
                 end
             end
         end
     end
-    -- fallback scan
     local all = findRemoteCandidates()
-    for _, r in ipairs(all) do
-        local rn = r.Name:lower()
-        if rn:match("rebirth") or rn:match("prestige") then
-            return r
-        end
-    end
+    for _, r in ipairs(all) do local rn = r.Name:lower() if rn:match("rebirth") or rn:match("prestige") then return r end end
     return nil
 end
 
--- Auto Tap implementation
+-- Auto mechanics
 local autoTapRunning = false
-local autoTapDelay = 0.1  -- default taps per second delay
+local autoTapDelay = 0.1
+local autoTapThread
 
 local function doTap(remote)
     if not remote then return false, "no remote" end
-    if remote.ClassName == "RemoteEvent" then
-        local ok, e = pcall(function()
-            -- many tap remotes require no args; some expect player or id — we try no-args first
-            remote:FireServer()
-        end)
+    if remote.ClassName=="RemoteEvent" then
+        local ok, e = pcall(function() remote:FireServer() end)
         return ok, e
-    elseif remote.ClassName == "RemoteFunction" then
-        local ok, res = pcall(function()
-            return remote:InvokeServer()
-        end)
+    elseif remote.ClassName=="RemoteFunction" then
+        local ok, res = pcall(function() return remote:InvokeServer() end)
         return ok, res
-    else
-        return false, "unsupported class"
     end
+    return false, "unsupported"
 end
 
-local autoTapThread = nil
 local function startAutoTap()
     if autoTapRunning then return end
     autoTapRunning = true
     autoTapThread = coroutine.create(function()
         local remote = findTapRemote()
-        if not remote then
-            OrionLib:MakeNotification({ Name = "Auto Tap", Content = "Tap remote not found. Use the Remote Enumerator in Misc.", Time = 6 })
-            autoTapRunning = false
-            return
-        end
+        if not remote then notify("Tap remote not found.") autoTapRunning=false return end
         while autoTapRunning do
             local ok, res = doTap(remote)
-            if not ok then
-                -- If tap failed, show notification once and stop loop to avoid spam
-                OrionLib:MakeNotification({ Name = "Auto Tap", Content = "Tap failed: "..tostring(res), Time = 6 })
-                -- stop rather than spam; user can re-enable after checking
-                autoTapRunning = false
-                break
-            end
+            if not ok then notify("Tap failed: "..tostring(res)) autoTapRunning=false break end
             wait(autoTapDelay)
         end
     end)
     coroutine.resume(autoTapThread)
+    notify("Auto Tap started")
 end
+local function stopAutoTap() autoTapRunning=false notify("Auto Tap stopped") end
 
-local function stopAutoTap()
-    autoTapRunning = false
-end
-
--- Auto Rebirth implementation
-local autoRebirthRunning = false
-local autoRebirthMin = 1  -- default times per attempt
-
-local rebirthThread = nil
+local autoRebirthRunning=false
+local rebirthThread
 local function startAutoRebirth()
     if autoRebirthRunning then return end
-    autoRebirthRunning = true
-    rebirthThread = coroutine.create(function()
+    autoRebirthRunning=true
+    rebirthThread=coroutine.create(function()
         local remote = findRebirthRemote()
-        if not remote then
-            OrionLib:MakeNotification({ Name = "Auto Rebirth", Content = "Rebirth remote not found. Use Remote Enumerator.", Time = 6 })
-            autoRebirthRunning = false
-            return
-        end
+        if not remote then notify("Rebirth remote not found.") autoRebirthRunning=false return end
         while autoRebirthRunning do
-            -- Try invoking rebirth. Many rebirth remotes expect an amount or nothing. We try no-args and then a 1 if fails.
             local ok, res = pcall(function()
-                if remote.ClassName == "RemoteEvent" then
-                    remote:FireServer()
-                else
-                    remote:InvokeServer()
-                end
+                if remote.ClassName=="RemoteEvent" then remote:FireServer() else remote:InvokeServer() end
             end)
-            if not ok then
-                -- try variant with argument 1
-                pcall(function()
-                    if remote.ClassName == "RemoteEvent" then
-                        remote:FireServer(1)
-                    else
-                        remote:InvokeServer(1)
-                    end
-                end)
-            end
+            if not ok then pcall(function() if remote.ClassName=="RemoteEvent" then remote:FireServer(1) else remote:InvokeServer(1) end end)
             wait(0.5)
         end
     end)
     coroutine.resume(rebirthThread)
+    notify("Auto Rebirth started")
 end
+local function stopAutoRebirth() autoRebirthRunning=false notify("Auto Rebirth stopped") end
 
-local function stopAutoRebirth()
-    autoRebirthRunning = false
-end
+-- UI behaviour
+local function toNum(s, def) local n=tonumber(s) return n and n>0 and n or def end
 
--- GUI elements
-autoTab:AddToggle({
-    Name = "Auto Tap",
-    Default = false,
-    Callback = function(val)
-        if val then startAutoTap() else stopAutoTap() end
-    end
-})
-
-autoTab:AddSlider({
-    Name = "Tap Delay (seconds)",
-    Min = 0.01,
-    Max = 1,
-    Default = 0.1,
-    Color = Color3.fromRGB(0,125,255),
-    Increment = 0.01,
-    ValueName = "Delay",
-    Callback = function(v) autoTapDelay = v end
-})
-
-autoTab:AddToggle({
-    Name = "Auto Rebirth",
-    Default = false,
-    Callback = function(val)
-        if val then startAutoRebirth() else stopAutoRebirth() end
-    end
-})
-
-autoTab:AddTextbox({
-    Name = "Rebirth attempts per loop (optional)",
-    Default = "1",
-    TextDisappear = true,
-    Callback = function(text)
-        local n = tonumber(text)
-        if n and n >= 1 then autoRebirthMin = n else autoRebirthMin = 1 end
-    end
-})
-
--- Teleports (example coordinates, change them as needed)
-tpTab:AddButton({
-    Name = "Teleport to Spawn",
-    Callback = function()
-        local plr = game:GetService("Players").LocalPlayer
-        if plr and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
-            plr.Character.HumanoidRootPart.CFrame = CFrame.new(0, 10, 0)
-        end
-    end
-})
-
-tpTab:AddButton({
-    Name = "Teleport to Shop (example)",
-    Callback = function()
-        local plr = game:GetService("Players").LocalPlayer
-        if plr and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
-            plr.Character.HumanoidRootPart.CFrame = CFrame.new(100, 10, 0)
-        end
-    end
-})
-
--- Misc utilities
-miscTab:AddButton({
-    Name = "Remote Enumerator (prints to console)",
-    Callback = function()
-        local found = findRemoteCandidates()
-        if #found == 0 then
-            print("No remote events/functions found in common services.")
-            OrionLib:MakeNotification({ Name = "Enumerator", Content = "No remotes found in common services.", Time = 5 })
-            return
-        end
-        print("---- Remote Enumerator Output ----")
-        for _, r in ipairs(found) do
-            print(("Name: %s | Class: %s | FullName: %s"):format(r.Name, r.ClassName, r:GetFullName()))
-        end
-        print("---- End Output ----")
-        OrionLib:MakeNotification({ Name = "Enumerator", Content = "Printed remotes to console. Copy them here.", Time = 6 })
-    end
-})
-
-miscTab:AddButton({
-    Name = "Print found Tap & Rebirth (best guess)",
-    Callback = function()
-        local t = findTapRemote()
-        local r = findRebirthRemote()
-        if t then
-            print("Guessed Tap remote:", t:GetFullName(), "Class:", t.ClassName)
-            OrionLib:MakeNotification({ Name = "Guess", Content = "Tap remote: "..t:GetFullName(), Time = 5 })
-        else
-            OrionLib:MakeNotification({ Name = "Guess", Content = "Tap remote not found.", Time = 5 })
-        end
-        if r then
-            print("Guessed Rebirth remote:", r:GetFullName(), "Class:", r.ClassName)
-            OrionLib:MakeNotification({ Name = "Guess", Content = "Rebirth: "..r:GetFullName(), Time = 5 })
-        else
-            OrionLib:MakeNotification({ Name = "Guess", Content = "Rebirth remote not found.", Time = 5 })
-        end
-    end
-})
-
-miscTab:AddButton({
-    Name = "Stop All",
-    Callback = function()
+autoTapToggle.MouseButton1Click:Connect(function()
+    if not autoTapRunning then
+        autoTapDelay = toNum(delayBox.Text, 0.1)
+        startAutoTap()
+        autoTapToggle.BackgroundColor3 = Color3.fromRGB(0,150,0)
+        autoTapToggle.Text = "Auto Tap: ON"
+    else
         stopAutoTap()
-        stopAutoRebirth()
-        OrionLib:MakeNotification({ Name = "Stopped", Content = "Stopped Auto Tap and Auto Rebirth.", Time = 4 })
+        autoTapToggle.BackgroundColor3 = Color3.fromRGB(60,60,60)
+        autoTapToggle.Text = "Auto Tap: OFF"
     end
-})
+end)
 
-OrionLib:MakeNotification({
-    Name = "Loaded",
-    Content = "Tap Simulator GUI loaded (best-effort remotes). Use Remote Enumerator if features fail.",
-    Time = 6
-})
+autoRebirthToggle.MouseButton1Click:Connect(function()
+    if not autoRebirthRunning then
+        startAutoRebirth()
+        autoRebirthToggle.BackgroundColor3 = Color3.fromRGB(0,150,0)
+        autoRebirthToggle.Text = "Auto Rebirth: ON"
+    else
+        stopAutoRebirth()
+        autoRebirthToggle.BackgroundColor3 = Color3.fromRGB(60,60,60)
+        autoRebirthToggle.Text = "Auto Rebirth: OFF"
+    end
+end)
+
+enumBtn.MouseButton1Click:Connect(function()
+    local found = findRemoteCandidates()
+    if #found==0 then print("No remotes found in common services.") notify("No remotes found.") return end
+    print("---- Remote Enumerator Output ----")
+    for _, r in ipairs(found) do
+        print(("Name: %s | Class: %s | FullName: %s"):format(r.Name, r.ClassName, r:GetFullName()))
+    end
+    print("---- End Output ----")
+    notify("Printed remotes to console", 6)
+end)
+
+printGuessBtn.MouseButton1Click:Connect(function()
+    local t = findTapRemote()
+    local r = findRebirthRemote()
+    if t then print("Guessed Tap:", t:GetFullName(), t.ClassName) notify("Tap: "..t:GetFullName()) else notify("Tap not found") end
+    if r then print("Guessed Rebirth:", r:GetFullName(), r.ClassName) notify("Rebirth: "..r:GetFullName()) else notify("Rebirth not found") end
+end)
+
+-- Teleports (example coords)
+tp1.MouseButton1Click:Connect(function()
+    local plr = LocalPlayer
+    if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+        plr.Character.HumanoidRootPart.CFrame = CFrame.new(0,10,0)
+        notify("Teleported to spawn")
+    end
+end)
+
+tp2.MouseButton1Click:Connect(function()
+    local plr = LocalPlayer
+    if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+        plr.Character.HumanoidRootPart.CFrame = CFrame.new(100,10,0)
+        notify("Teleported to shop")
+    end
+end)
+
+-- finished
+notify("TapSim GUI loaded (self-contained)", 5)
